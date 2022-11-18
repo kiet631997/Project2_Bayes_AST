@@ -1,0 +1,301 @@
+---
+title: "Analysis (with the Red Giants)"
+author: "Aritra Banerjee"
+date: "2022-11-17"
+output: pdf_document
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mvtnorm)
+library(modelsummary)
+library(ggplot2)
+library(plotly)
+library(mcmcse)
+library(SimTools)
+library(MCMCpack)
+source('functions.R')
+```
+
+In this project our objective is to build a linear model that explains the association of Luminosity and Temperature of a star. Stefano-Boltzman law says that for perfect radiators we have $L \propto T^4$. Since, radiating surface of a star is a good approximation of black body, we can expect a linear association between $logL$ and $logT$.
+
+```{r}
+data <- read.csv('SB_LAW.csv', header = T)
+
+plot(logL1 ~ logT1, data = data, pch = 16)
+```
+In the plot we can see a cluster of high luminosity points at a low temperature which correspond to the Red Giants in our dataset and these high luminosity data points lie above the $y = 6x-21$ in the plot
+
+```{r}
+plot(logL1 ~ logT1, data = data, pch = 16)
+abline(b = 6, a = -21, col = 'red', lty = 2, lwd = 2)
+```
+ To take care of this kind of data it makes sense to consider 2 separate lines for the red giants and the main sequence stars. We can do that by creating a dummy variable for the red-giants in the following manner
+ 
+ 
+$$
+logL_i = \beta_0 + \beta_1 logT_i + \beta_21_{RG} + \epsilon_i
+$$
+ 
+```{r}
+data$dummy <- ifelse(data$logL1<6*data$logT1 - 21, 'MC', 'RG')
+data$dummy <- as.factor(data$dummy)
+```
+Fitting a linear model with both the $logT$ and $dummy$ as  predictors we get a model that fits two parallel lines for 2 groups
+
+
+```{r}
+lmod <- lm(logL1 ~ logT1 + dummy, data = data)
+b_mod <- coef(lmod)
+
+plot(logL1 ~ logT1, data = data, pch = 16)
+
+abline(a = b_mod[1], b = b_mod[2], 
+       col = 'red', lwd = 2,
+       lty = 2)
+
+abline(a = b_mod[1] + b_mod[3], b = b_mod[2], 
+       col = 'blue',
+       lty = 2, lwd = 2)
+```
+The summary of the model is as below
+```{r}
+modelsummary(lmod)
+```
+
+For the Bayesian analysis on the model, we perform the Linchpin variable sampling to get sample from the posterior of the regression coefficients. We assume the reference prior for our analysis, i.e.
+$$
+\nu(\beta, \sigma^2) =  \frac{1}{\sigma^2};\hspace{5pt}\sigma>0, \beta \in R^3
+$$
+
+Now, since we are interested in 4 variables in total, we need to know what should be our effective smaple size
+```{r}
+minESS(p = 4)
+```
+
+# Reference prior:
+So, we should make enough number of iterations to get at least an effective sample size of 8000. 
+The linchpin variable sampling is performed using the following R-code (with 10000)
+```{r}
+sse<-sum(lmod$residuals^2) 
+
+lam_shape<-lmod$df/2
+
+mod_mat<-model.matrix(lmod)
+
+XTXinv<-solve(t(mod_mat) %*% mod_mat)
+
+msim<-1e4
+
+ref_post_sample<-matrix(NA_real_, ncol=4, nrow=msim)
+
+colnames(ref_post_sample) <- c(bquote(beta[0]),bquote(beta[1]),
+                               bquote(beta[2]), bquote(lambda))
+
+for (iter in 1:msim){
+  lam<-rgamma(1, shape=lam_shape, scale = 2/sse)
+  cmat<-(1/lam)*XTXinv
+  ref_post_sample[iter,]<-c(rmvnorm(1,
+                                    mean = lmod$coefficients, 
+                                    sigma = cmat),lam)
+}
+```
+The effective sample sizes are above are requirement so we are good to go
+```{r}
+ref_post_sample <- as.mcmc(ref_post_sample)
+apply(ref_post_sample, 2, ess)
+```
+following is brief summary of the samples
+```{r}
+apply(ref_post_sample, 2, summary)
+```
+and the ACF's also look good.
+```{r}
+acf(ref_post_sample[,1:3])
+```
+The following are the marginal posteriors of the regression parameters
+```{r}
+par(mfrow = c(2,2))
+
+hist_ci(ref_post_sample[,1], name = bquote(beta[0]))
+hist_ci(ref_post_sample[,2], name = bquote(beta[1]))
+hist_ci(ref_post_sample[,3], name = bquote(beta[2]))
+hist_ci(1/ref_post_sample[,4], name = bquote(sigma^2))
+```
+We can also look into the joint distributions of the coefficients of $\beta$
+and the joint distributions of $\beta_0$, $\beta_2$ and $\beta_1$, $\beta_2$ look as expected but that of $\beta_0$ and $\beta_1$ looks very highly correlated
+
+```{r}
+b0_post <- ref_post_sample[,1]
+b1_post <- ref_post_sample[,2]
+b2_post <- ref_post_sample[,3]
+
+df <- data.frame(b0 = as.vector(b0_post),
+                 b1 = as.vector(b1_post),
+                 b2 = as.vector(b2_post))
+```
+
+```{r}
+f02 <- ggplot(data = df, aes(x = b0, y=b2) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() + 
+  xlab(bquote(beta[0])) + 
+  ylab(bquote(beta[2])) + 
+  theme(
+    legend.position='none'
+  )
+
+f12 <- ggplot(data = df, aes(x = b1, y=b2) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  xlab(bquote(beta[1])) + 
+  ylab(bquote(beta[2])) +
+  theme(
+    legend.position='none'
+  )
+
+f01 <- ggplot(data = df, aes(x = b0, y=b1) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  xlab(bquote(beta[0])) + 
+  ylab(bquote(beta[1]))+
+  theme(
+    legend.position='none'
+  )
+
+ggpubr::ggarrange(f02, f12, f01, nrow = 1, ncol = 3)
+```
+
+which we suspect is because the determinant of the corresponding dispersion matrix is very close to 0.
+
+```{r}
+XTXinv[1:2, 1:2] |> det()
+```
+
+# Independence Prior:
+
+Now we shall be considering the  independence prior, i.e.
+$$
+\beta \sim \mathcal{N}(b_0, B_0^{-1})
+$$
+$$
+\frac{1}{\sigma^2} \sim Gamma(c_0/2, d_0/2)
+$$
+
+for $B_0$ we assume it's a diagonal matrix, i.e. we assume an independent prior on the $\beta_j$'s. We assume $B_0^{-1} = diag(1/b_1,1/b_1, 1/b_1)$.
+Here, we can use the \texttt{MCMCregress} function to sample from the posterior. For a brief sensitivity analysis let us vary the hyperparameters a little and see what impact it has on the posterior distributions 
+
+## $b_0 = \hat{\beta}_{MLE}, b_1 =1, c_0 = 1, d_0 = 1$
+
+```{r}
+ref_post_sample <- MCMCregress(logL1 ~ logT1 + dummy, data=data, 
+                               burnin=0, mcmc=1e4, b0= coef(lmod), 
+                               B0=1, c0=1, d0=1)
+
+apply(ref_post_sample, 2, ess)
+
+apply(ref_post_sample, 2, mean)
+```
+Again, we good in effective sample size front. The distributions look like
+```{r}
+par(mfrow = c(2,2))
+hist_ci(ref_post_sample[,1], name = bquote(beta[0]))
+hist_ci(ref_post_sample[,2], name = bquote(beta[1]))
+hist_ci(ref_post_sample[,3], name = bquote(beta[2]))
+hist_ci(1/ref_post_sample[,4], name = bquote(sigma^2))
+```
+
+## $b_0 = \hat{\beta}_{MLE}, b_1 =1e-3, c_0 = 1, d_0 = 1$
+
+```{r}
+ref_post_sample <- MCMCregress(logL1 ~ logT1 + dummy, data=data, 
+                               burnin=0, mcmc=1e4, b0= coef(lmod), 
+                               B0=1e-3, c0=1, d0=1)
+
+apply(ref_post_sample, 2, ess)
+
+apply(ref_post_sample, 2, mean)
+```
+```{r}
+par(mfrow = c(2,2))
+hist_ci(ref_post_sample[,1], name = bquote(beta[0]))
+hist_ci(ref_post_sample[,2], name = bquote(beta[1]))
+hist_ci(ref_post_sample[,3], name = bquote(beta[2]))
+hist_ci(1/ref_post_sample[,4], name = bquote(sigma^2))
+```
+
+
+## $b_0 = 0, b_1 =1e-3, c_0 = 10, d_0 = 10$
+
+```{r}
+ref_post_sample <- MCMCregress(logL1 ~ logT1 + dummy, data=data, 
+                               burnin=0, mcmc=1e4, b0= c(0,0,0), 
+                               B0=1e-3, c0=1, d0=1)
+
+apply(ref_post_sample, 2, ess)
+
+apply(ref_post_sample, 2, mean)
+```
+```{r}
+par(mfrow = c(2,2))
+hist_ci(ref_post_sample[,1], name = bquote(beta[0]))
+hist_ci(ref_post_sample[,2], name = bquote(beta[1]))
+hist_ci(ref_post_sample[,3], name = bquote(beta[2]))
+hist_ci(1/ref_post_sample[,4], name = bquote(sigma^2))
+```
+
+This pretty much shows that the posterior distribution remains more or less unaffected by the choice of hyper parameters and the both the reference prior and independence prior yield similar outcome.
+Finally proceeding with the $b_0 = \hat{\beta}_{MLE}, b_1 =1e-3, c_0 = 1, d_0 = 1$ case if we look into the joint distributions of $\beta$ coefficients we again see similar plots as before
+
+```{r}
+ref_post_sample <- MCMCregress(logL1 ~ logT1 + dummy, data=data, 
+                               burnin=0, mcmc=2.5e4, b0= coef(lmod), 
+                               B0=1, c0=1, d0=1)
+b0_post <- ref_post_sample[,1]
+b1_post <- ref_post_sample[,2]
+b2_post <- ref_post_sample[,3]
+
+df <- data.frame(b0 = as.vector(b0_post),
+                 b1 = as.vector(b1_post),
+                 b2 = as.vector(b2_post))
+```
+
+
+```{r}
+f02 <- ggplot(data = df, aes(x = b0, y=b2) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() + 
+  xlab(bquote(beta[0])) + 
+  ylab(bquote(beta[2])) + 
+  theme(
+    legend.position='none'
+  )
+
+f12 <- ggplot(data = df, aes(x = b1, y=b2) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  xlab(bquote(beta[1])) + 
+  ylab(bquote(beta[2])) +
+  theme(
+    legend.position='none'
+  )
+
+f01 <- ggplot(data = df, aes(x = b0, y=b1) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon") +
+  scale_fill_continuous(type = "viridis") +
+  theme_bw() +
+  xlab(bquote(beta[0])) + 
+  ylab(bquote(beta[1]))+
+  theme(
+    legend.position='none'
+  )
+
+ggpubr::ggarrange(f02, f12, f01, nrow = 1, ncol = 3)
+```
+
