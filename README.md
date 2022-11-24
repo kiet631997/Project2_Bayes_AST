@@ -1,2 +1,3 @@
-# stat5731proj1
-STAT 5731 Project 1
+# Stefan Bolzmann Law linear regression
+
+The Jupyter notebook contains the codes and outputs for section 3, 4 and 8 in the documments
